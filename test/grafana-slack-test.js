@@ -1,6 +1,7 @@
+/* global describe, context, beforeEach, afterEach, it */
+
 const Helper = require('hubot-test-helper');
 const chai = require('chai');
-const sinon = require('sinon');
 chai.use(require('sinon-chai'));
 const nock = require('nock');
 
@@ -47,7 +48,7 @@ describe('slack', () => {
   });
 
   context('slack upload', () => {
-    beforeEach(function () {
+    beforeEach(() => {
       room = helper.createRoom();
       nock.disableNetConnect();
       nock('https://slack.com')
@@ -58,12 +59,12 @@ describe('slack', () => {
         .replyWithFile(200, `${__dirname}/fixtures/slack/files.upload.json`);
     });
 
-    afterEach(function () {
+    afterEach(() => {
       nock.cleanAll();
       return room.destroy();
     });
 
-    it('should respond with an uploaded graph', function (done) {
+    it('should respond with an uploaded graph', (done) => {
       const selfRoom = room;
       selfRoom.user.say('alice', '@hubot graf db 97PlYC7Mk:panel-3');
       setTimeout(
@@ -89,10 +90,10 @@ describe('slack', () => {
   });
 
   context('slack and s3', () => {
-    beforeEach(function () {
-      process.env.AWS_ACCESS_KEY_ID = 'key_id'
-      process.env.AWS_SECRET_ACCESS_KEY = 'secret_key'
-      process.env.AWS_REGION = 'us-west-2'
+    beforeEach(() => {
+      process.env.AWS_ACCESS_KEY_ID = 'key_id';
+      process.env.AWS_SECRET_ACCESS_KEY = 'secret_key';
+      process.env.AWS_REGION = 'us-west-2';
       process.env.HUBOT_GRAFANA_S3_BUCKET = 'graf';
       process.env.HUBOT_GRAFANA_S3_ACCESS_KEY_ID = '99999999999999999';
       process.env.HUBOT_GRAFANA_S3_SECRET_ACCESS_KEY = '9999999999999999999999';
@@ -106,7 +107,7 @@ describe('slack', () => {
         .reply(200);
     });
 
-    afterEach(function () {
+    afterEach(() => {
       room.destroy();
       nock.cleanAll();
       delete process.env.AWS_ACCESS_KEY_ID;
@@ -117,7 +118,7 @@ describe('slack', () => {
       delete process.env.HUBOT_GRAFANA_S3_SECRET_ACCESS_KEY;
     });
 
-    it('should respond with an uploaded graph', function (done) {
+    it('should respond with an uploaded graph', (done) => {
       const selfRoom = room;
       selfRoom.user.say('alice', '@hubot graf db 97PlYC7Mk:panel-3');
       setTimeout(

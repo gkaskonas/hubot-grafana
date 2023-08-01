@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 // Description:
 //   Query Grafana dashboards
 //
@@ -49,7 +50,7 @@
 
 const crypto = require('crypto');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const request = require('request');
+const axios = require('axios');
 
 module.exports = (robot) => {
   // Various configuration options stored in environment variables
@@ -96,7 +97,7 @@ module.exports = (robot) => {
       grafana_host = robot.brain.get(`grafana_host_${room}`);
       grafana_api_key = robot.brain.get(`grafana_api_key_${room}`);
       if (!grafana_host) {
-        return;
+        return false;
       }
     }
     return { host: grafana_host, api_key: grafana_api_key };
@@ -158,13 +159,13 @@ module.exports = (robot) => {
       // The order we apply non-variables in
       const timeFields = ['from', 'to'];
 
-      for (const part of Array.from(remainder.trim().split(' '))) {
+      remainder.trim().split(' ').forEach((part) => {
         // Check if it's a variable or part of the timespan
         if (part.indexOf('=') >= 0) {
           // put query stuff into its own dict
           if (part.split('=')[0] in query) {
             query[part.split('=')[0]] = part.split('=')[1];
-            continue;
+            return;
           }
 
           variables = `${variables}&var-${part}`;
@@ -174,7 +175,7 @@ module.exports = (robot) => {
         } else if (timeFields.length > 0) {
           timespan[timeFields.shift()] = part.trim();
         }
-      }
+      });
     }
 
     robot.logger.debug(msg.match);
@@ -187,12 +188,13 @@ module.exports = (robot) => {
     robot.logger.debug(pname);
 
     // Call the API to get information about this dashboard
-    return callGrafana(endpoint, `dashboards/uid/${uid}`, (dashboard) => {
+    callGrafana(endpoint, `dashboards/uid/${uid}`, (dashboard) => {
       let template_map;
       robot.logger.debug(dashboard);
       // Check dashboard information
       if (!dashboard) {
-        return sendError('An error ocurred. Check your logs for more details.', msg);
+        sendError('An error ocurred. Check your logs for more details.', msg);
+        return;
       }
       if (dashboard.message) {
         // Search for URL slug to offer help
@@ -204,7 +206,8 @@ module.exports = (robot) => {
                 return;
               }
             }
-            return sendError(dashboard.message, msg);
+            sendError(dashboard.message, msg);
+            return;
           });
         } else {
           sendError(dashboard.message, msg);
@@ -412,7 +415,7 @@ module.exports = (robot) => {
     if (!(alerts.length > 0)) {
       return;
     }
-    for (const alert of Array.from(alerts)) {
+    alerts.forEach((alert) => {
       let line = `- *${alert.name}* (${alert.id}): \`${alert.state}\``;
       if (alert.newStateDate) {
         line += `\n  last state change: ${alert.newStateDate}`;
@@ -421,8 +424,8 @@ module.exports = (robot) => {
         line += `\n  execution error: ${alert.executionError}`;
       }
       response = `${response + line}\n`;
-    }
-    return msg.send(response.trim());
+    });
+    msg.send(response.trim());
   };
 
   // Send Dashboard list
@@ -440,15 +443,15 @@ module.exports = (robot) => {
     }
 
     const list = [];
-    for (const dashboard of Array.from(dashboards)) {
+    dashboards.forEach((dashboard) => {
       list.push(`- ${dashboard.uid}: ${dashboard.title}`);
-    }
+    });
 
     if (remaining) {
       list.push(` (and ${remaining} more)`);
     }
 
-    return msg.send(response + list.join('\n'));
+    msg.send(response + list.join('\n'));
   };
 
   // Handle generic errors
@@ -570,9 +573,7 @@ module.exports = (robot) => {
         const command = new PutObjectCommand(params);
 
         s3.send(command)
-          .then(() => {
-            return sendRobotResponse(msg, title, `https://${s3_bucket}.${s3_region}.s3.amazonaws.com/${params.Key}`, link);
-          })
+          .then(() => sendRobotResponse(msg, title, `https://${s3_bucket}.${s3_region}.s3.amazonaws.com/${params.Key}`, link))
           .catch((s3Err) => {
             robot.logger.error(`Upload Error Code: ${s3Err}`);
             return msg.send(`${title} - [Upload Error] - ${link}`);
@@ -581,87 +582,66 @@ module.exports = (robot) => {
     },
 
     slack(msg, title, grafanaDashboardRequest, link) {
-      const testAuthData = {
-        url: 'https://slack.com/api/auth.test',
-        formData: {
-          token: slack_token,
-        },
-      };
-
       // We test auth against slack to obtain the team URL
-      return request.post(testAuthData, (err, httpResponse, slackResBody) => {
-        if (err) {
-          robot.logger.error(err);
-          return msg.send(`${title} - [Slack auth.test Error - invalid token/can't fetch team url] - ${link}`);
-        }
-        const slack_url = JSON.parse(slackResBody).url;
+      axios.post('https://slack.com/api/auth.test', { token: slack_token })
+        .then((response) => {
+          const slack_url = response.data.url;
 
-        // fill in the POST request. This must be www-form/multipart
-        const uploadData = {
-          url: `${slack_url.replace(/\/$/, '')}/api/files.upload`,
-          formData: {
+          // fill in the POST request. This must be www-form/multipart
+          const uploadData = {
             title: `${title}`,
             channels: msg.envelope.room,
             token: slack_token,
             // grafanaDashboardRequest() is the method that downloads the .png
             file: grafanaDashboardRequest(),
             filetype: 'png',
-          },
-        };
+          };
 
-        // Post images in thread if configured
-        if (use_threads) { uploadData.formData.thread_ts = msg.message.rawMessage.ts; }
+          // Post images in thread if configured
+          if (use_threads) { uploadData.thread_ts = msg.message.rawMessage.ts; }
 
-        // Try to upload the image to slack else pass the link over
-        return request.post(uploadData, (err, httpResponse, body) => {
-          const res = JSON.parse(body);
-
-          // Error logging, we must also check the body response.
-          // It will be something like: { "ok": <boolean>, "error": <error message> }
-          if (err) {
-            robot.logger.error(err);
-            return msg.send(`${title} - [Upload Error] - ${link}`);
-          } if (!res.ok) {
-            robot.logger.error(`Slack service error while posting data:${res.error}`);
-            return msg.send(`${title} - [Form Error: can't upload file] - ${link}`);
-          }
+          // Try to upload the image to slack else pass the link over
+          axios.post(`${slack_url.replace(/\/$/, '')}/api/files.upload`, uploadData)
+            .then((uploadResponse) => {
+              const res = JSON.parse(uploadResponse.data);
+              // Error logging, we must also check the body response.
+              // It will be something like: { "ok": <boolean>, "error": <error message> }
+              if (err) {
+                robot.logger.error(err);
+                msg.send(`${title} - [Upload Error] - ${link}`);
+              } if (!res.ok) {
+                robot.logger.error(`Slack service error while posting data:${res.error}`);
+                msg.send(`${title} - [Form Error: can't upload file] - ${link}`);
+              }
+            });
+        })
+        .catch((error) => {
+          robot.logger.error(error);
+          return msg.send(`${title} - [Slack auth.test Error - invalid token/can't fetch team url] - ${link}`);
         });
-      });
     },
 
     rocketchat(msg, title, grafanaDashboardRequest, link) {
       const authData = {
-        url: `${rocketchat_url}/api/v1/login`,
-        form: {
-          username: rocketchat_user,
-          password: rocketchat_password,
-        },
+        username: rocketchat_user,
+        password: rocketchat_password,
       };
 
       // We auth against rocketchat to obtain the auth token
-      return request.post(authData, (err, httpResponse, rocketchatResBody) => {
-        if (err) {
-          robot.logger.error(err);
-          return msg.send(`${title} - [Rocketchat auth Error - invalid url, user or password/can't access rocketchat api] - ${link}`);
-        }
-        let errMsg;
-        const { status } = JSON.parse(rocketchatResBody);
-        if (status !== 'success') {
-          errMsg = JSON.parse(rocketchatResBody).message;
-          robot.logger.error(errMsg);
-          msg.send(`${title} - [Rocketchat auth Error - ${errMsg}] - ${link}`);
-        }
+      axios.post(`${rocketchat_url}/api/v1/login`, authData)
+        .then((response) => {
+          let errMsg;
+          const { status } = response.data;
+          if (status !== 'success') {
+            errMsg = JSON.parse(response.data).message;
+            robot.logger.error(errMsg);
+            msg.send(`${title} - [Rocketchat auth Error - ${errMsg}] - ${link}`);
+          }
 
-        const auth = JSON.parse(rocketchatResBody).data;
+          const auth = response.data.data;
 
-        // fill in the POST request. This must be www-form/multipart
-        const uploadData = {
-          url: `${rocketchat_url}/api/v1/rooms.upload/${msg.envelope.user.roomID}`,
-          headers: {
-            'X-Auth-Token': auth.authToken,
-            'X-User-Id': auth.userId,
-          },
-          formData: {
+          // fill in the POST request. This must be www-form/multipart
+          const uploadData = {
             msg: `${title}: ${link}`,
             // grafanaDashboardRequest() is the method that downloads the .png
             file: {
@@ -671,25 +651,34 @@ module.exports = (robot) => {
                 contentType: 'image/png',
               },
             },
-          },
-        };
+          };
 
-        // Try to upload the image to rocketchat else pass the link over
-        return request.post(uploadData, (err, httpResponse, body) => {
-          const res = JSON.parse(body);
-
-          // Error logging, we must also check the body response.
-          // It will be something like: { "success": <boolean>, "error": <error message> }
-          if (err) {
-            robot.logger.error(err);
-            return msg.send(`${title} - [Upload Error] - ${link}`);
-          } if (!res.success) {
-            errMsg = res.error;
-            robot.logger.error(`rocketchat service error while posting data:${errMsg}`);
-            return msg.send(`${title} - [Form Error: can't upload file : ${errMsg}] - ${link}`);
-          }
+          // Try to upload the image to rocketchat else pass the link over
+          axios.post(`${rocketchat_url}/api/v1/rooms.upload/${msg.envelope.user.roomID}`, uploadData, {
+            headers: {
+              'X-Auth-Token': auth.authToken,
+              'X-User-Id': auth.userId,
+            },
+          })
+            .then((responseUpload) => {
+              const res = responseUpload.data;
+              // Error logging, we must also check the body response.
+              // It will be something like: { "success": <boolean>, "error": <error message> }
+              if (!res.success) {
+                errMsg = res.error;
+                robot.logger.error(`rocketchat service error while posting data:${errMsg}`);
+                msg.send(`${title} - [Form Error: can't upload file : ${errMsg}] - ${link}`);
+              }
+            })
+            .catch((error) => {
+              robot.logger.error(error);
+              msg.send(`${title} - [Upload Error] - ${link}`);
+            });
+        })
+        .catch((error) => {
+          robot.logger.error(error);
+          msg.send(`${title} - [Rocketchat auth Error - invalid url, user or password/can't access rocketchat api] - ${link}`);
         });
-      });
     },
     telegram(msg, title, grafanaDashboardRequest, link) {
       const caption = `${title}: ${link}`;
@@ -719,16 +708,16 @@ module.exports = (robot) => {
     // Pass this function along to the "registered" services that uploads the image.
     // The function will download the .png image(s) dashboard. You must pass this
     // function and use it inside your service upload implementation.
-    const grafanaDashboardRequest = (callback) => request(url, requestHeaders, (err, res, body) => {
-      if (err) {
-        return sendError(err, msg);
-      }
-      robot.logger.debug(`Uploading file: ${body.length} bytes, content-type[${res.headers['content-type']}]`);
-      if (callback) {
-        return callback(err, res, body);
-      }
-      return null;
-    });
+    const grafanaDashboardRequest = (callback) => {
+      axios.get(url, {}, requestHeaders)
+        .then((response) => {
+          robot.logger.debug(`Uploading file: ${response.data.length} bytes, content-type[${response.headers['content-type']}]`);
+          if (callback) {
+            callback(null, response, response.data);
+          }
+          return null;
+        });
+    };
 
     return uploadTo[site()](msg, title, grafanaDashboardRequest, link);
   };
